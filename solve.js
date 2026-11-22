@@ -1,8 +1,10 @@
 // solve.js
 export {
   run,
-  runBytes,
   runJson,
+  runBytes,
   runEscapedBytes,
-  run as default,
+  stageInput,
+  findStringEnd,
+  runStagedBytes,
 } from './wasm-run.mjs';

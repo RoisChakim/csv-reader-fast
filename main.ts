@@ -1,19 +1,49 @@
 // main.ts
 import {
-  readFileSync,
-  mkdirSync,
   openSync,
+  fstatSync,
+  readSync,
   writeSync,
   closeSync,
+  mkdirSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { runEscapedBytes } from './solve.js';
+import {
+  stageInput,
+  findStringEnd,
+  runStagedBytes,
+} from './solve.js';
 
 const inputDir = process.env.MAKEFUN_INPUT_DIR ?? '/input';
 const outputDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
-// Deliberately omit an encoding: keep the entire file as raw bytes.
-const source = readFileSync(join(inputDir, 'cases.json'));
+function readSource() {
+  const fd = openSync(join(inputDir, 'cases.json'), 'r');
+
+  try {
+    const bytes = stageInput(fstatSync(fd).size);
+    let offset = 0;
+
+    while (offset < bytes.byteLength) {
+      const n = readSync(
+        fd,
+        bytes,
+        offset,
+        bytes.byteLength - offset,
+        null,
+      );
+      if (n <= 0) throw new Error('Unexpected EOF in cases.json');
+      offset += n;
+    }
+
+    return bytes;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// Read directly into WASM memory. No file-sized JS buffer or input copy.
+const source = readSource();
 let cursor = 0;
 
 type CaseSlice = {
@@ -40,20 +70,10 @@ function expect(c: number): void {
   ++cursor;
 }
 
-// Native byte search skips long ordinary runs. A quote closes the string
-// exactly when its immediately preceding backslash run has even length.
 function stringEnd(start: number): number {
-  let quote = source.indexOf(34, start);
-
-  while (quote !== -1) {
-    let back = quote;
-    while (back > start && source[back - 1] === 92) --back;
-
-    if (((quote - back) & 1) === 0) return quote;
-    quote = source.indexOf(34, quote + 1);
-  }
-
-  invalid();
+  const end = findStringEnd(start);
+  if (end >= source.length) invalid();
+  return end;
 }
 
 function hexValue(c: number): number {
@@ -62,8 +82,6 @@ function hexValue(c: number): number {
   return c >= 97 && c <= 102 ? c - 87 : -1;
 }
 
-// Compare only small property names. Also recognize escaped ASCII keys,
-// such as "te\u0078t", without constructing a JavaScript string.
 function keyEquals(start: number, end: number, expected: string): boolean {
   let index = 0;
 
@@ -112,8 +130,6 @@ function keyEquals(start: number, end: number, expected: string): boolean {
   return index === expected.length;
 }
 
-// Skip an irrelevant value in the valid JSON envelope. Nested objects
-// and arrays are handled iteratively; quoted braces have no effect.
 function skipValue(): void {
   skipWhitespace();
   const first = source[cursor];
@@ -144,6 +160,7 @@ function skipValue(): void {
   }
 
   const start = cursor;
+
   while (cursor < source.length) {
     const c = source[cursor];
     if (
@@ -265,7 +282,6 @@ function readCase(): CaseSlice {
   return result;
 }
 
-// Retain only one small byte-range descriptor per case.
 const cases: CaseSlice[] = [];
 
 expect(91);
@@ -287,19 +303,21 @@ if (source[cursor] === 93) {
 skipWhitespace();
 if (cursor !== source.length) invalid();
 
+// Only numeric ranges are used after this point. WASM may grow its
+// memory during parsing without invalidating the staged input offsets.
 function writeAll(fd: number, bytes: Uint8Array): void {
   let offset = 0;
 
   while (offset < bytes.byteLength) {
-    const written = writeSync(
+    const n = writeSync(
       fd,
       bytes,
       offset,
       bytes.byteLength - offset,
       null,
     );
-    if (written <= 0) throw new Error('Unable to write answers.json');
-    offset += written;
+    if (n <= 0) throw new Error('Unable to write answers.json');
+    offset += n;
   }
 }
 
@@ -317,11 +335,7 @@ try {
     if (i !== 0) writeAll(fd, comma);
 
     const item = cases[i];
-    // Finish writing this view before the next parse reuses WASM memory.
-    writeAll(
-      fd,
-      runEscapedBytes(source, item.start, item.end, item.header),
-    );
+    writeAll(fd, runStagedBytes(item.start, item.end, item.header));
   }
 
   writeAll(fd, closeArray);
