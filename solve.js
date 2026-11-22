@@ -1,1 +1,8 @@
-export { run, runJson } from './wasm-run.mjs';
+// solve.js
+export {
+  run,
+  runBytes,
+  runJson,
+  runEscapedBytes,
+  run as default,
+} from './wasm-run.mjs';
